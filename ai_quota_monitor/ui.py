@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import queue
+import shutil
 import subprocess
 import threading
 import tkinter as tk
@@ -191,6 +192,7 @@ class App(tk.Tk):
         ttk.Label(titles, text="AI 额度 Monitor", style="Header.TLabel").pack(anchor="w")
         ttk.Label(titles, text="安静地掌握每个 Agent 的可用额度", style="Subtitle.TLabel").pack(anchor="w")
         ttk.Button(header, text="立即刷新", style="Accent.TButton", command=self.refresh).pack(side="right")
+        ttk.Button(header, text="登录 Claude", style="Soft.TButton", command=self._login_claude).pack(side="right", padx=8)
 
         account_bar = ttk.Frame(root, style="Root.TFrame")
         account_bar.pack(fill="x", pady=(22, 10))
@@ -352,6 +354,19 @@ class App(tk.Tk):
         messagebox.showinfo(
             "完成登录",
             "已为此账号打开独立的 Codex 登录窗口。按窗口提示完成登录后，回到这里点击“立即刷新”。",
+            parent=self,
+        )
+
+    def _login_claude(self) -> None:
+        executable = shutil.which("claude")
+        if not executable:
+            messagebox.showerror("未找到 Claude Code", "请先安装 Claude Code CLI。", parent=self)
+            return
+        flags = subprocess.CREATE_NEW_CONSOLE if os.name == "nt" else 0
+        subprocess.Popen([executable, "auth", "login"], creationflags=flags)
+        messagebox.showinfo(
+            "Claude 登录",
+            "已打开 Claude 登录窗口。完成授权后返回这里点击“立即刷新”。",
             parent=self,
         )
 

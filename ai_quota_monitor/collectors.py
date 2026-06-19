@@ -4,6 +4,7 @@ import glob
 import json
 import os
 import queue
+import re
 import subprocess
 import threading
 import urllib.error
@@ -28,11 +29,7 @@ class ClaudeCollector:
             auth = json.loads(credentials.read_text(encoding="utf-8"))["claudeAiOauth"]
             request = urllib.request.Request(
                 self.USAGE_URL,
-                headers={
-                    "Authorization": f"Bearer {auth['accessToken']}",
-                    "anthropic-beta": "oauth-2025-04-20",
-                    "user-agent": "ai-quota-monitor/0.1.0",
-                },
+                headers=self._headers(auth["accessToken"]),
             )
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
                 payload = json.load(response)
@@ -61,7 +58,11 @@ class ClaudeCollector:
         except FileNotFoundError:
             return self._error("未找到 Claude Code 登录信息，请先运行 claude /login")
         except urllib.error.HTTPError as exc:
-            return self._error(f"Claude 用量接口返回 HTTP {exc.code}，可能需要重新登录")
+            if exc.code == 429:
+                return self._error("Claude 用量请求被限流，将在稍后自动重试")
+            if exc.code in (401, 403):
+                return self._error(f"Claude 登录已失效（HTTP {exc.code}），请点击“登录 Claude”")
+            return self._error(f"Claude 用量接口返回 HTTP {exc.code}")
         except urllib.error.URLError as exc:
             return self._error(f"Claude 网络请求失败：{exc.reason}")
         except (OSError, ValueError, KeyError, TypeError) as exc:
@@ -70,6 +71,28 @@ class ClaudeCollector:
     @staticmethod
     def _error(message: str) -> QuotaSnapshot:
         return QuotaSnapshot(provider="Claude Code", source="不可用", error=message)
+
+    def _headers(self, access_token: str) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {access_token}",
+            "anthropic-beta": "oauth-2025-04-20",
+            "user-agent": self._claude_user_agent(),
+        }
+
+    @staticmethod
+    def _claude_user_agent() -> str:
+        flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        try:
+            result = subprocess.run(
+                ["claude", "--version"], capture_output=True, text=True, timeout=3,
+                creationflags=flags, check=False,
+            )
+            match = re.search(r"\d+\.\d+\.\d+", result.stdout or result.stderr)
+            if match:
+                return f"claude-code/{match.group(0)}"
+        except (OSError, subprocess.SubprocessError):
+            pass
+        return "claude-code/2.1.183"
 
 
 class CodexCollector:

@@ -3,8 +3,9 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
-from ai_quota_monitor.collectors import CodexCollector
+from ai_quota_monitor.collectors import ClaudeCollector, CodexCollector
 from ai_quota_monitor.models import GrantBatch, parse_datetime
 from ai_quota_monitor.service import GrantService
 from ai_quota_monitor.storage import AccountStore, StateStore
@@ -53,6 +54,19 @@ class CodexParsingTests(unittest.TestCase):
             {"primary": {"used_percent": 20, "window_minutes": 300, "resets_at": 1781890741}}
         )
         self.assertEqual(snapshot.windows[0].used_percent, 20)
+
+
+class ClaudeCollectorTests(unittest.TestCase):
+    def test_user_agent_tracks_installed_claude_code_version(self):
+        result = type("Result", (), {"stdout": "2.1.183 (Claude Code)", "stderr": ""})()
+        with patch("ai_quota_monitor.collectors.subprocess.run", return_value=result):
+            self.assertEqual(ClaudeCollector._claude_user_agent(), "claude-code/2.1.183")
+
+    def test_usage_headers_use_claude_code_identity(self):
+        collector = ClaudeCollector()
+        with patch.object(collector, "_claude_user_agent", return_value="claude-code/2.1.183"):
+            headers = collector._headers("test-token")
+        self.assertEqual(headers["user-agent"], "claude-code/2.1.183")
 
 
 class GrantServiceTests(unittest.TestCase):

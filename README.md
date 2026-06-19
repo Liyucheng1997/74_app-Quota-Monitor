@@ -1,6 +1,6 @@
 # AI 额度 Monitor
 
-当前版本：**1.0.0**
+当前版本：**1.0.1**
 
 [下载 Windows 单文件版](https://github.com/Liyucheng1997/AI-Quota-Monitor/releases/latest)
 
