@@ -2,7 +2,7 @@
 
 当前版本：**1.0.1**
 
-[下载 Windows 单文件版](https://github.com/Liyucheng1997/AI-Quota-Monitor/releases/latest)
+[下载 Windows 单文件版](https://github.com/Liyucheng1997/74_app-Quota-Monitor/releases/latest)
 
 Windows 本地桌面工具，用一张面板查看 Claude Code 与 Codex 的额度、重置倒计时，以及 Codex 赠送重置次数的 30 天失效跟踪。
 
