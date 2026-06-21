@@ -12,6 +12,7 @@ from tkinter import messagebox, simpledialog, ttk
 
 from .collectors import ClaudeCollector, CodexCollector
 from .models import CodexAccount, GrantBatch, LimitWindow, QuotaSnapshot, utc_now
+from .pet import PetWindow
 from .service import GrantService
 from .storage import AccountStore
 
@@ -150,6 +151,7 @@ class App(tk.Tk):
         self.pending: set[str] = set()
         self.refreshing = False
         self.auto_refresh_job: str | None = None
+        self.pet: PetWindow | None = None
 
         self._build()
         self.after(150, self.refresh)
@@ -193,6 +195,8 @@ class App(tk.Tk):
         ttk.Label(titles, text="安静地掌握每个 Agent 的可用额度", style="Subtitle.TLabel").pack(anchor="w")
         ttk.Button(header, text="立即刷新", style="Accent.TButton", command=self.refresh).pack(side="right")
         ttk.Button(header, text="登录 Claude", style="Soft.TButton", command=self._login_claude).pack(side="right", padx=8)
+        self.pet_button = ttk.Button(header, text="🐾 桌面宠物", style="Soft.TButton", command=self._toggle_pet)
+        self.pet_button.pack(side="right", padx=(0, 8))
 
         account_bar = ttk.Frame(root, style="Root.TFrame")
         account_bar.pack(fill="x", pady=(22, 10))
@@ -356,6 +360,27 @@ class App(tk.Tk):
             "已为此账号打开独立的 Codex 登录窗口。按窗口提示完成登录后，回到这里点击“立即刷新”。",
             parent=self,
         )
+
+    def _toggle_pet(self) -> None:
+        if self.pet is not None:
+            self.pet.close()
+            return
+        self.pet = PetWindow(
+            self,
+            codex_homes_provider=lambda: [account.codex_home for account in self.accounts],
+            on_open_main=self._show_main_window,
+            on_close=self._on_pet_closed,
+        )
+        self.pet_button.configure(text="🐾 隐藏宠物")
+
+    def _on_pet_closed(self) -> None:
+        self.pet = None
+        self.pet_button.configure(text="🐾 桌面宠物")
+
+    def _show_main_window(self) -> None:
+        self.deiconify()
+        self.lift()
+        self.focus_force()
 
     def _login_claude(self) -> None:
         executable = shutil.which("claude")
