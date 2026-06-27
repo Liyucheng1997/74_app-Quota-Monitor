@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .models import LimitWindow, QuotaSnapshot, parse_datetime
+from .models import GrantBatch, LimitWindow, QuotaSnapshot, parse_datetime
 
 
 class ClaudeCollector:
@@ -96,6 +96,8 @@ class ClaudeCollector:
 
 
 class CodexCollector:
+    RESET_CREDITS_URL = "https://chatgpt.com/backend-api/codex/rate-limit-reset-credits"
+
     def __init__(
         self, home: Path | None = None, timeout: float = 10.0, codex_home: Path | None = None
     ) -> None:
@@ -170,9 +172,18 @@ class CodexCollector:
             if "error" in response:
                 raise RuntimeError(str(response["error"]))
             result = response["result"]
+            reset_count = (result.get("rateLimitResetCredits") or {}).get("availableCount")
+            reset_credit_grants = []
+            reset_credit_details_available = False
+            reset_details = self._collect_reset_credit_details()
+            if reset_details is not None:
+                reset_count, reset_credit_grants = reset_details
+                reset_credit_details_available = True
             snapshot = self._snapshot_from_rate_limits(
                 result.get("rateLimits") or {},
-                reset_count=(result.get("rateLimitResetCredits") or {}).get("availableCount"),
+                reset_count=reset_count,
+                reset_credit_grants=reset_credit_grants,
+                reset_credit_details_available=reset_credit_details_available,
                 source="Codex 本地 RPC 实时数据",
             )
             account = (account_response.get("result") or {}).get("account") or {}
@@ -185,6 +196,30 @@ class CodexCollector:
                 process.wait(timeout=2)
             except subprocess.TimeoutExpired:
                 process.kill()
+
+    def _collect_reset_credit_details(self) -> tuple[int | None, list[GrantBatch]] | None:
+        auth_path = self.codex_home / "auth.json"
+        try:
+            token = json.loads(auth_path.read_text(encoding="utf-8"))["tokens"]["access_token"]
+            request = urllib.request.Request(
+                self.RESET_CREDITS_URL,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Accept": "application/json",
+                    "User-Agent": "codex-cli/ai-quota-monitor",
+                },
+            )
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                payload = json.load(response)
+            grants = [
+                GrantBatch.from_backend_credit(item)
+                for item in payload.get("credits", [])
+                if isinstance(item, dict)
+            ]
+            count = payload.get("available_count", payload.get("availableCount"))
+            return int(count) if count is not None else None, grants
+        except (OSError, ValueError, KeyError, TypeError, urllib.error.URLError):
+            return None
 
     def _wait_for_id(self, output: queue.Queue[str], request_id: int) -> dict[str, Any]:
         while True:
@@ -218,7 +253,11 @@ class CodexCollector:
 
     @staticmethod
     def _snapshot_from_rate_limits(
-        limits: dict[str, Any], reset_count: int | None = None, source: str = ""
+        limits: dict[str, Any],
+        reset_count: int | None = None,
+        reset_credit_grants: list[GrantBatch] | None = None,
+        reset_credit_details_available: bool = False,
+        source: str = "",
     ) -> QuotaSnapshot:
         windows = []
         aliases = (("primary", "5 小时"), ("secondary", "7 天"))
@@ -238,5 +277,7 @@ class CodexCollector:
             windows=windows,
             credit_balance=str(balance) if balance is not None else None,
             reset_credits_count=int(reset_count) if reset_count is not None else None,
+            reset_credit_grants=reset_credit_grants or [],
+            reset_credit_details_available=reset_credit_details_available,
             source=source,
         )

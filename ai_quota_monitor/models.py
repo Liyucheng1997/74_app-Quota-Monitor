@@ -39,6 +39,8 @@ class QuotaSnapshot:
     windows: list[LimitWindow] = field(default_factory=list)
     credit_balance: str | None = None
     reset_credits_count: int | None = None
+    reset_credit_grants: list[GrantBatch] = field(default_factory=list)
+    reset_credit_details_available: bool = False
     source: str = ""
     sampled_at: datetime = field(default_factory=utc_now)
     error: str | None = None
@@ -68,6 +70,27 @@ class GrantBatch:
             expires_at=now + timedelta(days=30),
             source="auto",
             estimated=True,
+        )
+
+    @classmethod
+    def from_backend_credit(cls, data: dict[str, Any]) -> "GrantBatch":
+        granted_at = parse_datetime(data.get("granted_at"))
+        expires_at = parse_datetime(data.get("expires_at"))
+        if granted_at is None and expires_at is not None:
+            granted_at = expires_at - timedelta(days=30)
+        if expires_at is None and granted_at is not None:
+            expires_at = granted_at + timedelta(days=30)
+        granted_at = granted_at or utc_now()
+        expires_at = expires_at or granted_at + timedelta(days=30)
+        status = str(data.get("status") or "").lower()
+        return cls(
+            id=str(data.get("id") or uuid4().hex),
+            count=1,
+            remaining=1 if status == "available" else 0,
+            granted_at=granted_at,
+            expires_at=expires_at,
+            source="backend",
+            estimated=False,
         )
 
     def to_dict(self) -> dict[str, Any]:

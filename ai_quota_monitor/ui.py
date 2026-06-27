@@ -232,7 +232,7 @@ class App(tk.Tk):
         self._render_grants()
         ttk.Label(
             root,
-            text="Codex 只提供赠送重置的可用次数，不提供授予或到期时间。自动记录按首次观察 + 30 天估算，可在这里校正。",
+            text="赠送重置优先读取 Codex 后端明细；如果接口不可用，则按首次观察 + 30 天估算，可在这里校正。",
             style="Status.TLabel",
         ).pack(anchor="w", pady=(8, 0))
         self.status = ttk.Label(root, text="准备刷新", style="Status.TLabel")
@@ -314,7 +314,12 @@ class App(tk.Tk):
                 self.claude_card.render(snapshot)
             else:
                 account_id = key.split(":", 1)[1]
-                if self.grant_services[account_id].reconcile(snapshot.reset_credits_count) and account_id == self.current_account_id:
+                changed = self.grant_services[account_id].reconcile(
+                    snapshot.reset_credits_count,
+                    backend_grants=snapshot.reset_credit_grants,
+                    backend_details_available=snapshot.reset_credit_details_available,
+                )
+                if changed:
                     self._render_grants()
                 if account_id in self.codex_cards:
                     self.codex_cards[account_id].render(snapshot)
@@ -435,7 +440,7 @@ class App(tk.Tk):
                     values=(
                         identity, f"{grant.remaining}/{grant.count}", local_time(grant.granted_at),
                         local_time(grant.expires_at), self._expiry_text(grant),
-                        "估算（可校正）" if grant.estimated else "手工确认",
+                        self._source_text(grant),
                     ),
                 )
         if selected and self.tree.exists(selected[0]):
@@ -446,8 +451,14 @@ class App(tk.Tk):
         if not grant.remaining:
             return "已使用/失效"
         if grant.expires_at <= utc_now():
-            return "估算已过期"
+            return "已过期"
         return format_countdown(grant.expires_at).replace("后重置", "后失效")
+
+    @staticmethod
+    def _source_text(grant: GrantBatch) -> str:
+        if grant.source == "backend":
+            return "Codex 后端真实时间"
+        return "估算（可校正）" if grant.estimated else "手工确认"
 
     def _selected_grant(self) -> tuple[str, str] | None:
         selection = self.tree.selection()

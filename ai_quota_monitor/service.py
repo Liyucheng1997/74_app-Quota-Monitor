@@ -11,7 +11,15 @@ class GrantService:
         self.store = store
         self.grants = store.load_grants()
 
-    def reconcile(self, available_count: int | None, now: datetime | None = None) -> bool:
+    def reconcile(
+        self,
+        available_count: int | None,
+        now: datetime | None = None,
+        backend_grants: list[GrantBatch] | None = None,
+        backend_details_available: bool = False,
+    ) -> bool:
+        if backend_details_available:
+            return self.sync_backend(backend_grants or [])
         if available_count is None:
             return False
         now = now or utc_now()
@@ -32,6 +40,14 @@ class GrantService:
         if changed:
             self.store.save_grants(self.grants)
         return changed
+
+    def sync_backend(self, backend_grants: list[GrantBatch]) -> bool:
+        grants = sorted(backend_grants, key=lambda g: (g.expires_at, g.id))
+        if [g.to_dict() for g in self.grants] == [g.to_dict() for g in grants]:
+            return False
+        self.grants = grants
+        self.store.save_grants(self.grants)
+        return True
 
     def add(self, count: int, granted_at: datetime) -> GrantBatch:
         grant = GrantBatch(

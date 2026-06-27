@@ -55,6 +55,33 @@ class CodexParsingTests(unittest.TestCase):
         )
         self.assertEqual(snapshot.windows[0].used_percent, 20)
 
+    def test_backend_reset_credit_payload(self):
+        grant = GrantBatch.from_backend_credit(
+            {
+                "id": "RateLimitResetCredit_test",
+                "status": "available",
+                "granted_at": "2026-06-25T07:11:01.041911Z",
+                "expires_at": "2026-07-25T07:11:01.041911Z",
+            }
+        )
+        self.assertEqual(grant.id, "RateLimitResetCredit_test")
+        self.assertEqual(grant.remaining, 1)
+        self.assertEqual(grant.granted_at, datetime(2026, 6, 25, 7, 11, 1, 41911, tzinfo=UTC))
+        self.assertEqual(grant.expires_at, datetime(2026, 7, 25, 7, 11, 1, 41911, tzinfo=UTC))
+        self.assertEqual(grant.source, "backend")
+        self.assertFalse(grant.estimated)
+
+    def test_redeemed_backend_reset_credit_has_no_remaining_count(self):
+        grant = GrantBatch.from_backend_credit(
+            {
+                "id": "RateLimitResetCredit_redeemed",
+                "status": "redeemed",
+                "granted_at": "2026-06-25T07:11:01Z",
+                "expires_at": "2026-07-25T07:11:01Z",
+            }
+        )
+        self.assertEqual(grant.remaining, 0)
+
 
 class ClaudeCollectorTests(unittest.TestCase):
     def test_user_agent_tracks_installed_claude_code_version(self):
@@ -100,6 +127,29 @@ class GrantServiceTests(unittest.TestCase):
         loaded = StateStore(self.store.path).load_grants()
         self.assertEqual(loaded[0].granted_at, self.now)
         self.assertFalse(loaded[0].estimated)
+
+    def test_backend_details_replace_estimated_local_records(self):
+        self.service.reconcile(2, self.now)
+        backend = [
+            GrantBatch(
+                id="RateLimitResetCredit_a",
+                count=1,
+                remaining=1,
+                granted_at=self.now + timedelta(days=1),
+                expires_at=self.now + timedelta(days=31),
+                source="backend",
+            )
+        ]
+        self.assertTrue(
+            self.service.reconcile(
+                1,
+                backend_grants=backend,
+                backend_details_available=True,
+            )
+        )
+        self.assertEqual(len(self.service.grants), 1)
+        self.assertEqual(self.service.grants[0].id, "RateLimitResetCredit_a")
+        self.assertEqual(self.service.grants[0].source, "backend")
 
 
 class AccountStoreTests(unittest.TestCase):
