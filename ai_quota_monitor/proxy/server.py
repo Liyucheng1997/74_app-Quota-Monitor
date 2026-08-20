@@ -1,15 +1,24 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
+import re
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from .auth import AuthError, ClaudeTokenStore, CodexTokenStore
-from .cli import ClaudeCliBackend, collect_system, render_prompt
+from .cli import ClaudeCliBackend, collect_system, extract_files, prompt_with_files, render_prompt
 from .config import ProxyConfig
 from . import translate
 from .upstream import ClaudeUpstream, CodexUpstream, UpstreamError
+
+
+# CORS 放行名单：自家网页应用（liyucheng.me 各子域）与本机页面。
+# 不放行 * —— 反代默认无鉴权，任意来源可用会让恶意网页偷跑订阅额度。
+_CORS_ORIGIN_RE = re.compile(
+    r"^https://([a-z0-9-]+\.)*liyucheng\.me$"
+    r"|^https?://(localhost|127\.0\.0\.1)(:\d+)?$"
+)
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -43,9 +52,20 @@ class _Handler(BaseHTTPRequestHandler):
             return {}
         return json.loads(raw.decode("utf-8"))
 
+    def _cors_origin(self) -> str:
+        origin = self.headers.get("Origin", "")
+        return origin if _CORS_ORIGIN_RE.match(origin) else ""
+
+    def _apply_cors(self) -> None:
+        origin = self._cors_origin()
+        if origin:
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
+
     def _send_json(self, status: int, payload: dict) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
+        self._apply_cors()
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -60,6 +80,7 @@ class _Handler(BaseHTTPRequestHandler):
         # SDK clients also stop on the [DONE] / message_stop sentinel).
         self.close_connection = True
         self.send_response(200)
+        self._apply_cors()
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "close")
@@ -70,6 +91,25 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.flush()
 
     # -- routing ---------------------------------------------------------- #
+
+    def do_OPTIONS(self) -> None:  # noqa: N802 - required name
+        """CORS 预检：浏览器网页(带 x-api-key 等头)调用前会先发 OPTIONS。"""
+        origin = self._cors_origin()
+        self.send_response(204)
+        if origin:
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header(
+                "Access-Control-Allow-Headers",
+                "Content-Type, Authorization, x-api-key, anthropic-version, "
+                "anthropic-dangerous-direct-browser-access",
+            )
+            # Chrome PNA:允许公网页面访问本机私有网络服务
+            self.send_header("Access-Control-Allow-Private-Network", "true")
+            self.send_header("Access-Control-Max-Age", "600")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def do_GET(self) -> None:  # noqa: N802 - required name
         path = self.path.split("?", 1)[0]
@@ -142,16 +182,21 @@ class _Handler(BaseHTTPRequestHandler):
 
         if self._use_cli():
             system = collect_system(messages)
-            prompt = render_prompt(messages)
-            if stream:
-                self._stream_openai_cli(system, prompt, model, created)
-            else:
-                try:
-                    resp = self.claude_cli.complete(system, prompt, model)
-                except UpstreamError as exc:
-                    self._send_error(exc.status, exc.message, "upstream_error")
-                    return
-                self._send_json(200, translate.anthropic_to_openai_response(resp, model, created))
+            files, cleanup = extract_files(messages, self.claude_cli.cwd)
+            prompt = prompt_with_files(render_prompt(messages), files)
+            tools = "Read" if files else ""
+            try:
+                if stream:
+                    self._stream_openai_cli(system, prompt, model, created, tools)
+                else:
+                    try:
+                        resp = self.claude_cli.complete(system, prompt, model, tools)
+                    except UpstreamError as exc:
+                        self._send_error(exc.status, exc.message, "upstream_error")
+                        return
+                    self._send_json(200, translate.anthropic_to_openai_response(resp, model, created))
+            finally:
+                cleanup()
             return
 
         try:
@@ -177,9 +222,9 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             self._send_json(200, translate.anthropic_to_openai_response(resp, model, created))
 
-    def _stream_openai_cli(self, system: str, prompt: str, model: str, created: int) -> None:
+    def _stream_openai_cli(self, system: str, prompt: str, model: str, created: int, tools: str = "") -> None:
         try:
-            events = self.claude_cli.stream_events(system, prompt, model)
+            events = self.claude_cli.stream_events(system, prompt, model, tools)
             self._start_stream()
             for chunk in translate.events_to_openai_chunks(events, model, created):
                 self._write_chunk(chunk)
@@ -215,25 +260,31 @@ class _Handler(BaseHTTPRequestHandler):
 
         if self._use_cli():
             system = self._anthropic_system_text(body.get("system"))
-            prompt = render_prompt(body.get("messages") or [])
-            if stream:
-                try:
-                    events = self.claude_cli.stream_events(system, prompt, model)
-                    self._start_stream()
-                    for raw in translate.events_to_anthropic_sse(events):
-                        self.wfile.write(raw)
-                        self.wfile.flush()
-                except UpstreamError as exc:
-                    self._send_error(exc.status, exc.message, "upstream_error")
-                except (BrokenPipeError, ConnectionResetError):
-                    return
-            else:
-                try:
-                    resp = self.claude_cli.complete(system, prompt, model)
-                except UpstreamError as exc:
-                    self._send_error(exc.status, exc.message, "upstream_error")
-                    return
-                self._send_json(200, resp)
+            messages = body.get("messages") or []
+            files, cleanup = extract_files(messages, self.claude_cli.cwd)
+            prompt = prompt_with_files(render_prompt(messages), files)
+            tools = "Read" if files else ""
+            try:
+                if stream:
+                    try:
+                        events = self.claude_cli.stream_events(system, prompt, model, tools)
+                        self._start_stream()
+                        for raw in translate.events_to_anthropic_sse(events):
+                            self.wfile.write(raw)
+                            self.wfile.flush()
+                    except UpstreamError as exc:
+                        self._send_error(exc.status, exc.message, "upstream_error")
+                    except (BrokenPipeError, ConnectionResetError):
+                        return
+                else:
+                    try:
+                        resp = self.claude_cli.complete(system, prompt, model, tools)
+                    except UpstreamError as exc:
+                        self._send_error(exc.status, exc.message, "upstream_error")
+                        return
+                    self._send_json(200, resp)
+            finally:
+                cleanup()
             return
 
         translate.inject_claude_code_identity(body)

@@ -15,17 +15,100 @@ passthrough and does not surface OpenAI-style function calls.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
+import re
 import shutil
 import subprocess
+import tempfile
 import threading
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 from .upstream import UpstreamError
 
 DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
+
+# 图片/PDF 内容块支持:CLI 模式没有多模态输入通道,把 base64 附件写成临时文件,
+# 在提示词里让 Claude 用 Read 工具查看(此时工具白名单放开 Read)。
+_MEDIA_EXT = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+    "application/pdf": ".pdf",
+}
+
+
+def extract_files(
+    messages: list[dict], base_dir: Path | str | None = None
+) -> tuple[list[str], Callable[[], None]]:
+    """把消息里的 base64 图片/PDF 内容块写成临时文件。
+
+    返回 (文件路径列表, 清理函数)。支持 Anthropic 风格
+    ({type:"image"/"document", source:{type:"base64",...}}) 和 OpenAI 风格
+    ({type:"image_url", image_url:{url:"data:...;base64,..."}}) 两种内容块。
+    base_dir 应传 CLI 的工作目录:headless 模式下 Read 工具只默认放行
+    工作目录内的文件,放到系统 TEMP 会被拒绝读取。
+    """
+
+    paths: list[str] = []
+    tmpdir: str | None = None
+
+    def ensure_dir() -> str:
+        nonlocal tmpdir
+        if tmpdir is None:
+            tmpdir = tempfile.mkdtemp(
+                prefix="aqm-cli-files-", dir=str(base_dir) if base_dir else None
+            )
+        return tmpdir
+
+    def save(media_type: str, data_b64: str) -> None:
+        ext = _MEDIA_EXT.get((media_type or "").lower())
+        if not ext:
+            return
+        try:
+            raw = base64.b64decode(data_b64)
+        except (ValueError, TypeError):
+            return
+        path = os.path.join(ensure_dir(), f"attachment-{len(paths) + 1:02d}{ext}")
+        with open(path, "wb") as fh:
+            fh.write(raw)
+        paths.append(path)
+
+    for message in messages:
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            if part.get("type") in ("image", "document"):
+                source = part.get("source") or {}
+                if isinstance(source, dict) and source.get("type") == "base64":
+                    save(source.get("media_type") or "", source.get("data") or "")
+            elif part.get("type") == "image_url":
+                url = (part.get("image_url") or {}).get("url") or ""
+                match = re.match(r"^data:([\w/.+-]+);base64,(.*)$", url, re.S)
+                if match:
+                    save(match.group(1), match.group(2))
+
+    def cleanup() -> None:
+        if tmpdir is not None:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    return paths, cleanup
+
+
+def prompt_with_files(prompt: str, files: list[str]) -> str:
+    if not files:
+        return prompt
+    listing = "\n".join(f"- {p}" for p in files)
+    return (
+        "请先用 Read 工具逐个查看以下文件(用户随消息附带的图片/PDF):\n"
+        f"{listing}\n\n{prompt}"
+    )
 
 
 def map_model(model: str | None, default_alias: str) -> str:
@@ -110,7 +193,7 @@ class ClaudeCliBackend:
     def available(self) -> bool:
         return bool(self.executable)
 
-    def _base_args(self, model: str, system: str, output_format: str) -> list[str]:
+    def _base_args(self, model: str, system: str, output_format: str, tools: str = "") -> list[str]:
         assert self.executable
         args = [
             self.executable,
@@ -120,7 +203,7 @@ class ClaudeCliBackend:
             "--model",
             map_model(model, self.default_alias),
             "--tools",
-            "",
+            tools,
             "--no-session-persistence",
             "--system-prompt",
             system or DEFAULT_SYSTEM_PROMPT,
@@ -145,12 +228,12 @@ class ClaudeCliBackend:
             creationflags=flags,
         )
 
-    def complete(self, system: str, prompt: str, model: str) -> dict:
+    def complete(self, system: str, prompt: str, model: str, tools: str = "") -> dict:
         """Run one non-streaming turn; return an Anthropic-shaped response dict."""
 
         from . import translate
 
-        args = self._base_args(model, system, "json")
+        args = self._base_args(model, system, "json", tools)
         process = self._popen(args)
         try:
             stdout, stderr = process.communicate(prompt, timeout=self.timeout)
@@ -173,10 +256,10 @@ class ClaudeCliBackend:
             msg_id=data.get("session_id") or "cli",
         )
 
-    def stream_events(self, system: str, prompt: str, model: str) -> Iterator[dict]:
+    def stream_events(self, system: str, prompt: str, model: str, tools: str = "") -> Iterator[dict]:
         """Run one streaming turn; yield inner Anthropic event dicts."""
 
-        args = self._base_args(model, system, "stream-json")
+        args = self._base_args(model, system, "stream-json", tools)
         process = self._popen(args)
         assert process.stdin is not None and process.stdout is not None
         try:
