@@ -417,11 +417,13 @@ class App(tk.Tk):
         )
         self.proxy_thread.start()
         url = self.proxy_server.url
+        backend = "claude -p CLI（较安全）" if config.claude_backend != "oauth" else "OAuth 直连"
         self.proxy_button.configure(text="🔌 反代运行中")
-        self.status.configure(text=f"反代已启动 · {url}")
+        self.status.configure(text=f"反代已启动 · {url} · {backend}")
         messagebox.showinfo(
             "反代已启动",
-            f"本地反代正在监听：{url}\n\n"
+            f"本地反代正在监听：{url}\n"
+            f"Claude 后端：{backend}\n\n"
             f"OpenAI 兼容端点：{url}/v1/chat/completions\n"
             f"Anthropic 原生端点：{url}/v1/messages\n"
             f"Codex（实验）：{url}/codex/responses\n\n"

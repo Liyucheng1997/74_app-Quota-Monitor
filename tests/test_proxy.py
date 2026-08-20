@@ -6,6 +6,7 @@ from pathlib import Path
 
 from ai_quota_monitor.proxy import translate
 from ai_quota_monitor.proxy.auth import ClaudeTokenStore
+from ai_quota_monitor.proxy import cli
 
 
 class IdentityInjectionTests(unittest.TestCase):
@@ -188,6 +189,51 @@ class StreamTranslationTests(unittest.TestCase):
                 finish = data["choices"][0]["finish_reason"]
         self.assertEqual("".join(texts), "Hello")
         self.assertEqual(finish, "stop")
+
+
+class CliBackendHelperTests(unittest.TestCase):
+    def test_map_model_aliases(self):
+        self.assertEqual(cli.map_model("gpt-4o", "sonnet"), "sonnet")
+        self.assertEqual(cli.map_model("claude-opus-4-1", "sonnet"), "opus")
+        self.assertEqual(cli.map_model("claude-3-5-haiku", "sonnet"), "claude-haiku-4-5")
+        self.assertEqual(cli.map_model("fable", "sonnet"), "fable")
+        self.assertEqual(cli.map_model(None, "sonnet"), "sonnet")
+        self.assertEqual(cli.map_model("claude-custom-9", "sonnet"), "claude-custom-9")
+
+    def test_collect_system_joins_system_messages(self):
+        messages = [
+            {"role": "system", "content": "Rule A."},
+            {"role": "user", "content": "hi"},
+            {"role": "system", "content": "Rule B."},
+        ]
+        self.assertEqual(cli.collect_system(messages), "Rule A.\n\nRule B.")
+
+    def test_render_prompt_single_user(self):
+        messages = [{"role": "system", "content": "s"}, {"role": "user", "content": "just this"}]
+        self.assertEqual(cli.render_prompt(messages), "just this")
+
+    def test_render_prompt_multi_turn_has_labels(self):
+        messages = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi there"},
+            {"role": "user", "content": "bye"},
+        ]
+        rendered = cli.render_prompt(messages)
+        self.assertIn("User: hello", rendered)
+        self.assertIn("Assistant: hi there", rendered)
+        self.assertTrue(rendered.rstrip().endswith("Assistant:"))
+
+    def test_build_anthropic_response_shape(self):
+        resp = translate.build_anthropic_response(
+            "hello", "end_turn", {"input_tokens": 3, "output_tokens": 5}, "sonnet", "sid"
+        )
+        self.assertEqual(resp["type"], "message")
+        self.assertEqual(resp["content"][0]["text"], "hello")
+        self.assertEqual(resp["stop_reason"], "end_turn")
+        self.assertEqual(resp["usage"]["output_tokens"], 5)
+        # And it round-trips into an OpenAI response.
+        openai = translate.anthropic_to_openai_response(resp, "sonnet", 1000)
+        self.assertEqual(openai["choices"][0]["message"]["content"], "hello")
 
 
 class ClaudeTokenRefreshTests(unittest.TestCase):

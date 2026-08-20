@@ -267,7 +267,19 @@ def _sse_events(lines: Iterator[bytes]) -> Iterator[dict]:
 def anthropic_stream_to_openai(
     lines: Iterator[bytes], model: str, created: int
 ) -> Iterator[str]:
-    """Yield OpenAI-formatted ``data: ...\\n\\n`` SSE strings from Anthropic events."""
+    """Yield OpenAI SSE strings from an Anthropic ``text/event-stream`` byte iterator."""
+
+    return events_to_openai_chunks(_sse_events(lines), model, created)
+
+
+def events_to_openai_chunks(
+    events: Iterator[dict], model: str, created: int
+) -> Iterator[str]:
+    """Yield OpenAI-formatted ``data: ...\\n\\n`` SSE strings from Anthropic event dicts.
+
+    Works for both the OAuth upstream (events parsed from SSE bytes) and the CLI
+    backend (events pulled out of ``stream_event`` JSONL lines).
+    """
 
     chunk_id = "chatcmpl-" + _fake_id("gen", created)
     base = {"id": chunk_id, "object": "chat.completion.chunk", "created": created, "model": model}
@@ -282,7 +294,7 @@ def anthropic_stream_to_openai(
         payload["choices"] = [{"index": 0, "delta": delta, "finish_reason": finish}]
         return "data: " + json.dumps(payload, ensure_ascii=False) + "\n\n"
 
-    for event in _sse_events(lines):
+    for event in events:
         etype = event.get("type")
         if etype == "content_block_start":
             block = event.get("content_block") or {}
@@ -336,6 +348,39 @@ def anthropic_stream_to_openai(
 
     yield chunk({}, finish=finish_reason)
     yield "data: [DONE]\n\n"
+
+
+def build_anthropic_response(
+    text: str, stop_reason: str | None, usage: dict, model: str, msg_id: str
+) -> dict:
+    """Assemble an Anthropic Messages response dict from plain text + metadata.
+
+    Used by the CLI backend, whose ``--output-format json`` returns a flat
+    ``result`` string rather than a full Messages response.
+    """
+
+    return {
+        "id": msg_id,
+        "type": "message",
+        "role": "assistant",
+        "model": model,
+        "content": [{"type": "text", "text": text}] if text else [],
+        "stop_reason": stop_reason or "end_turn",
+        "stop_sequence": None,
+        "usage": {
+            "input_tokens": (usage or {}).get("input_tokens", 0) or 0,
+            "output_tokens": (usage or {}).get("output_tokens", 0) or 0,
+        },
+    }
+
+
+def events_to_anthropic_sse(events: Iterator[dict]) -> Iterator[bytes]:
+    """Re-serialize Anthropic event dicts as ``text/event-stream`` bytes."""
+
+    for event in events:
+        etype = event.get("type", "message")
+        yield f"event: {etype}\n".encode("utf-8")
+        yield ("data: " + json.dumps(event, ensure_ascii=False) + "\n\n").encode("utf-8")
 
 
 def error_chunk(message: str, created: int, model: str) -> str:

@@ -3,11 +3,13 @@
 ## 1.3.0 - 2026-08-20
 
 - 新增本地反向代理：把 Claude Code / Codex 订阅暴露成本地 API，供自己的项目调用。
-- 同时提供 OpenAI 兼容端点 `/v1/chat/completions` 与 Anthropic 原生端点 `/v1/messages`，支持流式输出、工具调用和多模态图片。
-- 自动读取并刷新 Claude Code OAuth 令牌（`~/.claude/.credentials.json`），刷新后的新令牌写回原文件，与 Claude Code 本体保持同步。
+- 同时提供 OpenAI 兼容端点 `/v1/chat/completions` 与 Anthropic 原生端点 `/v1/messages`，支持流式输出与多模态图片。
+- Claude 默认走更安全的 `claude -p` CLI 后端：调用官方 Claude Code headless 模式，令牌与刷新由 CLI 自管（含 Windows 凭据库），不碰凭据文件，也无需为反代单独重新登录，被判定为滥用的风险更低；用 `AQM_CLAUDE_BACKEND=cli|oauth` 切换。
+- CLI 后端支持 `sonnet`/`opus`/`fable` 别名，并用 `--tools ""` + 调用方 system 提示裁剪为普通聊天模型。
+- OAuth 直连后端保留：自动刷新 Claude OAuth 令牌并写回 `~/.claude/.credentials.json`，与 Claude Code 本体保持同步（refresh token 会轮换）。
 - Codex/ChatGPT 提供实验性原始透传端点 `/codex/responses`（后端协议不稳定，仅作最佳努力）。
 - 可选 `AQM_PROXY_KEY` 本地访问密钥；默认仅监听 127.0.0.1。
-- 通过 `python -m ai_quota_monitor.proxy` 或 `start-proxy.bat` 启动。
+- 界面新增「🔌 反代 API」开关，弹窗与状态栏显示当前后端；也可用 `python -m ai_quota_monitor.proxy` 或 `start-proxy.bat` 启动。
 - 提示：用订阅令牌当通用 API 违反 Anthropic / OpenAI 使用条款，可能导致封号，仅限个人低频自用。
 
 ## 1.2.0 - 2026-06-27

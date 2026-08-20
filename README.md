@@ -66,13 +66,38 @@ resp = client.chat.completions.create(
 print(resp.choices[0].message.content)
 ```
 
+### 两种 Claude 后端
+
+反代访问 Claude 有两条路，用环境变量 `AQM_CLAUDE_BACKEND` 切换：
+
+| 后端 | 值 | 说明 |
+| --- | --- | --- |
+| **claude -p CLI**（默认） | `cli` | 调用官方 `claude` 本体的 headless（`-p`）模式跑一轮。请求签名天然就是真的 Claude Code，令牌刷新由 CLI 自己管（含 Windows 凭据库），我们不碰凭据文件。**更安全、更不易被判定为滥用**，也无需为反代单独重新登录。代价：每次调用起一个子进程（略慢），跑的是 Claude Code agent（已用 `--tools ""` + 你的 system 提示裁成普通聊天模型），不做 OpenAI function-calling，不是字节级 `/v1/messages` 透传。适合本地调试。 |
+| **OAuth 直连** | `oauth` | 直接带订阅令牌打 `api.anthropic.com`，模拟 Claude Code 的请求头与身份。更忠实于裸模型、支持工具调用，但更激进、更易被检测，且需要有效的本机令牌。 |
+
+CLI 后端下 `model` 可传别名 `sonnet` / `opus` / `fable`，也可传完整模型名；传入非 Claude 名称（如 `gpt-4o`）时回退到 `AQM_CLI_MODEL`（默认 `sonnet`）。
+
+在 OpenAI SDK 里这样用（两种后端调用方式完全一致）：
+
+```python
+from openai import OpenAI
+client = OpenAI(base_url="http://127.0.0.1:8787/v1", api_key="unused")
+resp = client.chat.completions.create(
+    model="sonnet",
+    messages=[{"role": "user", "content": "你好"}],
+)
+print(resp.choices[0].message.content)
+```
+
 环境变量（可选）：
 
+- `AQM_CLAUDE_BACKEND`：`cli`（默认，较安全）或 `oauth`（直连）。
 - `AQM_PROXY_HOST` / `AQM_PROXY_PORT`：监听地址与端口。
 - `AQM_PROXY_KEY`：设置后客户端需在 `Authorization: Bearer <key>` 或 `x-api-key` 里携带；不设置则无鉴权，因此**默认只监听本机**，不要在未设密钥时绑定 `0.0.0.0`。
-- `AQM_DEFAULT_MODEL`：客户端传入非 Claude 模型名（如 `gpt-4o`）时改用的默认模型。
+- `AQM_CLI_MODEL`：CLI 后端无法映射模型名时的默认别名。
+- `AQM_DEFAULT_MODEL`：OAuth 后端下，客户端传入非 Claude 模型名时改用的默认模型。
 
-令牌处理：反代自动检测 Claude 令牌是否过期，过期时用 refresh token 续期，并把新令牌写回 `~/.claude/.credentials.json`，与 Claude Code 本体保持同步（Anthropic 的 refresh token 会轮换，写回可避免本体被迫重新登录）。
+令牌处理：CLI 后端完全不碰凭据文件。OAuth 后端会自动检测 Claude 令牌是否过期，过期时用 refresh token 续期，并把新令牌写回 `~/.claude/.credentials.json`，与 Claude Code 本体保持同步（Anthropic 的 refresh token 会轮换，写回可避免本体被迫重新登录）。
 
 ## 打包为单文件 EXE
 

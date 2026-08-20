@@ -27,10 +27,22 @@ class ProxyConfig:
     # which is only safe because the server binds to localhost by default.
     api_key: str = field(default_factory=lambda: _env("AQM_PROXY_KEY", ""))
 
-    # Model used when a client asks for a non-Claude model id (e.g. "gpt-4o")
-    # against the Claude upstream. Override with AQM_DEFAULT_MODEL.
+    # How to reach Claude:
+    #   "cli"   -> shell out to the official `claude -p` binary (safer, default)
+    #   "oauth" -> impersonate Claude Code against api.anthropic.com directly
+    claude_backend: str = field(
+        default_factory=lambda: _env("AQM_CLAUDE_BACKEND", "cli").lower()
+    )
+
+    # Model used when a client asks for a non-Claude model id (e.g. "gpt-4o").
+    # For the OAuth backend this is a full model id; for the CLI backend a bare
+    # alias (sonnet/opus/fable) is also accepted.
     default_claude_model: str = field(
         default_factory=lambda: _env("AQM_DEFAULT_MODEL", "claude-sonnet-4-5")
+    )
+    # Default CLI model alias when the client model can't be mapped.
+    default_cli_alias: str = field(
+        default_factory=lambda: _env("AQM_CLI_MODEL", "sonnet")
     )
 
     # Fallback max_tokens for OpenAI-style requests that omit it (Anthropic

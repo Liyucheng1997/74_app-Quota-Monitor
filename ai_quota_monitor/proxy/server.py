@@ -6,6 +6,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from .auth import AuthError, ClaudeTokenStore, CodexTokenStore
+from .cli import ClaudeCliBackend, collect_system, render_prompt
 from .config import ProxyConfig
 from . import translate
 from .upstream import ClaudeUpstream, CodexUpstream, UpstreamError
@@ -14,6 +15,7 @@ from .upstream import ClaudeUpstream, CodexUpstream, UpstreamError
 class _Handler(BaseHTTPRequestHandler):
     config: ProxyConfig
     claude: ClaudeUpstream
+    claude_cli: ClaudeCliBackend
     codex: CodexUpstream
 
     server_version = "AIQuotaMonitorProxy"
@@ -119,10 +121,39 @@ class _Handler(BaseHTTPRequestHandler):
             },
         )
 
+    def _use_cli(self) -> bool:
+        return self.config.claude_backend != "oauth"
+
+    @staticmethod
+    def _anthropic_system_text(system: Any) -> str:
+        if isinstance(system, str):
+            return system
+        if isinstance(system, list):
+            return "\n\n".join(
+                b.get("text", "") for b in system if isinstance(b, dict) and b.get("type") == "text"
+            )
+        return ""
+
     def _handle_chat_completions(self, body: dict) -> None:
         created = int(time.time())
         stream = bool(body.get("stream"))
         model = body.get("model") or self.config.default_claude_model
+        messages = body.get("messages") or []
+
+        if self._use_cli():
+            system = collect_system(messages)
+            prompt = render_prompt(messages)
+            if stream:
+                self._stream_openai_cli(system, prompt, model, created)
+            else:
+                try:
+                    resp = self.claude_cli.complete(system, prompt, model)
+                except UpstreamError as exc:
+                    self._send_error(exc.status, exc.message, "upstream_error")
+                    return
+                self._send_json(200, translate.anthropic_to_openai_response(resp, model, created))
+            return
+
         try:
             payload = translate.openai_to_anthropic(
                 body, self.config.default_claude_model, self.config.default_max_tokens
@@ -146,6 +177,17 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             self._send_json(200, translate.anthropic_to_openai_response(resp, model, created))
 
+    def _stream_openai_cli(self, system: str, prompt: str, model: str, created: int) -> None:
+        try:
+            events = self.claude_cli.stream_events(system, prompt, model)
+            self._start_stream()
+            for chunk in translate.events_to_openai_chunks(events, model, created):
+                self._write_chunk(chunk)
+        except UpstreamError as exc:
+            self._write_chunk(translate.error_chunk(exc.message, created, model))
+        except (BrokenPipeError, ConnectionResetError):
+            return
+
     def _stream_openai(self, payload: dict, model: str, created: int) -> None:
         payload["stream"] = True
         try:
@@ -166,7 +208,33 @@ class _Handler(BaseHTTPRequestHandler):
             self._write_chunk(translate.error_chunk(exc.message, created, model))
 
     def _handle_messages(self, body: dict) -> None:
-        """Anthropic-native passthrough: inject identity, forward as-is."""
+        """Anthropic-native endpoint (OAuth: passthrough; CLI: emulated)."""
+
+        stream = bool(body.get("stream"))
+        model = body.get("model") or self.config.default_claude_model
+
+        if self._use_cli():
+            system = self._anthropic_system_text(body.get("system"))
+            prompt = render_prompt(body.get("messages") or [])
+            if stream:
+                try:
+                    events = self.claude_cli.stream_events(system, prompt, model)
+                    self._start_stream()
+                    for raw in translate.events_to_anthropic_sse(events):
+                        self.wfile.write(raw)
+                        self.wfile.flush()
+                except UpstreamError as exc:
+                    self._send_error(exc.status, exc.message, "upstream_error")
+                except (BrokenPipeError, ConnectionResetError):
+                    return
+            else:
+                try:
+                    resp = self.claude_cli.complete(system, prompt, model)
+                except UpstreamError as exc:
+                    self._send_error(exc.status, exc.message, "upstream_error")
+                    return
+                self._send_json(200, resp)
+            return
 
         translate.inject_claude_code_identity(body)
         if not body.get("model"):
@@ -232,6 +300,10 @@ class ProxyServer:
             {
                 "config": self.config,
                 "claude": ClaudeUpstream(claude_tokens, self.config.upstream_timeout),
+                "claude_cli": ClaudeCliBackend(
+                    default_alias=self.config.default_cli_alias,
+                    timeout=self.config.upstream_timeout,
+                ),
                 "codex": CodexUpstream(codex_tokens, self.config.upstream_timeout),
             },
         )
@@ -252,7 +324,9 @@ class ProxyServer:
 def serve(config: ProxyConfig | None = None) -> None:
     server = ProxyServer(config)
     cfg = server.config
+    backend = "claude -p CLI（较安全）" if cfg.claude_backend != "oauth" else "OAuth 直连（较激进）"
     print(f"AI Quota Monitor 反代已启动：{server.url}")
+    print(f"  Claude 后端      : {backend}")
     print(f"  OpenAI 兼容端点  : {server.url}/v1/chat/completions")
     print(f"  Anthropic 原生端点: {server.url}/v1/messages")
     print(f"  Codex(实验)      : {server.url}/codex/responses")
