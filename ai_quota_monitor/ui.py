@@ -13,6 +13,8 @@ from tkinter import messagebox, simpledialog, ttk
 from .collectors import ClaudeCollector, CodexCollector
 from .models import CodexAccount, GrantBatch, LimitWindow, QuotaSnapshot, utc_now
 from .pet import PetWindow
+from .proxy.config import ProxyConfig
+from .proxy.server import ProxyServer
 from .service import GrantService
 from .storage import AccountStore
 
@@ -152,8 +154,11 @@ class App(tk.Tk):
         self.refreshing = False
         self.auto_refresh_job: str | None = None
         self.pet: PetWindow | None = None
+        self.proxy_server: ProxyServer | None = None
+        self.proxy_thread: threading.Thread | None = None
 
         self._build()
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.after(150, self.refresh)
         self.after(60_000, self._tick)
 
@@ -195,6 +200,8 @@ class App(tk.Tk):
         ttk.Label(titles, text="安静地掌握每个 Agent 的可用额度", style="Subtitle.TLabel").pack(anchor="w")
         ttk.Button(header, text="立即刷新", style="Accent.TButton", command=self.refresh).pack(side="right")
         ttk.Button(header, text="登录 Claude", style="Soft.TButton", command=self._login_claude).pack(side="right", padx=8)
+        self.proxy_button = ttk.Button(header, text="🔌 反代 API", style="Soft.TButton", command=self._toggle_proxy)
+        self.proxy_button.pack(side="right", padx=(0, 8))
         self.pet_button = ttk.Button(header, text="🐾 桌面宠物", style="Soft.TButton", command=self._toggle_pet)
         self.pet_button.pack(side="right", padx=(0, 8))
 
@@ -381,6 +388,64 @@ class App(tk.Tk):
     def _on_pet_closed(self) -> None:
         self.pet = None
         self.pet_button.configure(text="🐾 桌面宠物")
+
+    def _toggle_proxy(self) -> None:
+        if self.proxy_server is not None:
+            self._stop_proxy()
+            return
+        warning = (
+            "本地反代会把你的 Claude Code / Codex 订阅令牌暴露成 API，供本机其它项目调用。\n\n"
+            "⚠️ 用订阅令牌当通用 API 违反 Anthropic / OpenAI 使用条款，可能导致账号被封，"
+            "仅建议个人、低频、单人自用。\n\n确定要启动吗？"
+        )
+        if not messagebox.askyesno("启动本地反代", warning, parent=self):
+            return
+        config = ProxyConfig()
+        try:
+            self.proxy_server = ProxyServer(config)
+        except OSError as exc:
+            self.proxy_server = None
+            messagebox.showerror(
+                "启动失败",
+                f"无法在 {config.host}:{config.port} 启动反代：{exc}\n"
+                "端口可能被占用，可设置环境变量 AQM_PROXY_PORT 换一个端口。",
+                parent=self,
+            )
+            return
+        self.proxy_thread = threading.Thread(
+            target=self.proxy_server.serve_forever, daemon=True
+        )
+        self.proxy_thread.start()
+        url = self.proxy_server.url
+        self.proxy_button.configure(text="🔌 反代运行中")
+        self.status.configure(text=f"反代已启动 · {url}")
+        messagebox.showinfo(
+            "反代已启动",
+            f"本地反代正在监听：{url}\n\n"
+            f"OpenAI 兼容端点：{url}/v1/chat/completions\n"
+            f"Anthropic 原生端点：{url}/v1/messages\n"
+            f"Codex（实验）：{url}/codex/responses\n\n"
+            "把它当作 API base_url 调用即可（api_key 任意填）。",
+            parent=self,
+        )
+
+    def _stop_proxy(self) -> None:
+        if self.proxy_server is None:
+            return
+        server = self.proxy_server
+        self.proxy_server = None
+        self.proxy_thread = None
+        threading.Thread(target=server.shutdown, daemon=True).start()
+        self.proxy_button.configure(text="🔌 反代 API")
+        self.status.configure(text="反代已停止")
+
+    def _on_close(self) -> None:
+        if self.proxy_server is not None:
+            try:
+                self.proxy_server.shutdown()
+            except Exception:  # noqa: BLE001 - best effort on exit
+                pass
+        self.destroy()
 
     def _show_main_window(self) -> None:
         self.deiconify()

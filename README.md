@@ -1,6 +1,6 @@
 # AI 额度 Monitor
 
-当前版本：**1.2.0**
+当前版本：**1.3.0**
 
 [下载 Windows 单文件版](https://github.com/Liyucheng1997/74_app-Quota-Monitor/releases/latest)
 
@@ -33,6 +33,46 @@ python app.py
 ### 添加多个 Codex 账号
 
 点击顶部“添加账号”，输入备注名称。工具会打开独立的 Codex 登录窗口；完成登录后返回工具并点击“立即刷新”。每个账号使用独立的 `CODEX_HOME`，不会覆盖 Codex Desktop 当前账号，也不会由本工具复制登录令牌。
+
+## 本地反向代理（把订阅当 API 用）
+
+> ⚠️ **风险须知**：用订阅（Claude Pro/Max、ChatGPT Plus/Pro）的 OAuth 令牌对外提供通用 API，**违反 Anthropic / OpenAI 使用条款，可能导致账号被封**。此功能仅供个人、低频、单人自用。请求特征已尽量模拟真实客户端，但不保证不被检测。是否使用由你自行承担风险。
+
+反代复用 Monitor 已经在读取的本机登录令牌，起一个本地 HTTP 服务，让你自己的项目把它当普通 API 调用，无需再花钱买 API Key。
+
+启动：
+
+```powershell
+python -m ai_quota_monitor.proxy
+```
+
+或双击 `start-proxy.bat`。默认监听 `http://127.0.0.1:8787`，提供三个端点：
+
+| 端点 | 格式 | 说明 |
+| --- | --- | --- |
+| `/v1/chat/completions` | OpenAI 兼容 | 直接接 OpenAI SDK、LangChain 等现成工具，支持流式、工具调用、图片 |
+| `/v1/messages` | Anthropic 原生 | 与官方 Claude API 一致，适合已用 `anthropic` SDK 的项目 |
+| `/codex/responses` | ChatGPT 后端透传 | **实验性**，Codex Responses 协议原样转发，接口不稳定 |
+
+在 OpenAI SDK 里这样用：
+
+```python
+from openai import OpenAI
+client = OpenAI(base_url="http://127.0.0.1:8787/v1", api_key="unused")
+resp = client.chat.completions.create(
+    model="claude-sonnet-4-5",
+    messages=[{"role": "user", "content": "你好"}],
+)
+print(resp.choices[0].message.content)
+```
+
+环境变量（可选）：
+
+- `AQM_PROXY_HOST` / `AQM_PROXY_PORT`：监听地址与端口。
+- `AQM_PROXY_KEY`：设置后客户端需在 `Authorization: Bearer <key>` 或 `x-api-key` 里携带；不设置则无鉴权，因此**默认只监听本机**，不要在未设密钥时绑定 `0.0.0.0`。
+- `AQM_DEFAULT_MODEL`：客户端传入非 Claude 模型名（如 `gpt-4o`）时改用的默认模型。
+
+令牌处理：反代自动检测 Claude 令牌是否过期，过期时用 refresh token 续期，并把新令牌写回 `~/.claude/.credentials.json`，与 Claude Code 本体保持同步（Anthropic 的 refresh token 会轮换，写回可避免本体被迫重新登录）。
 
 ## 打包为单文件 EXE
 

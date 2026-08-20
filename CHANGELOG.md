@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.3.0 - 2026-08-20
+
+- 新增本地反向代理：把 Claude Code / Codex 订阅暴露成本地 API，供自己的项目调用。
+- 同时提供 OpenAI 兼容端点 `/v1/chat/completions` 与 Anthropic 原生端点 `/v1/messages`，支持流式输出、工具调用和多模态图片。
+- 自动读取并刷新 Claude Code OAuth 令牌（`~/.claude/.credentials.json`），刷新后的新令牌写回原文件，与 Claude Code 本体保持同步。
+- Codex/ChatGPT 提供实验性原始透传端点 `/codex/responses`（后端协议不稳定，仅作最佳努力）。
+- 可选 `AQM_PROXY_KEY` 本地访问密钥；默认仅监听 127.0.0.1。
+- 通过 `python -m ai_quota_monitor.proxy` 或 `start-proxy.bat` 启动。
+- 提示：用订阅令牌当通用 API 违反 Anthropic / OpenAI 使用条款，可能导致封号，仅限个人低频自用。
+
 ## 1.2.0 - 2026-06-27
 
 - Codex 赠送重置优先读取后端明细，显示真实授予时间和到期时间。
