@@ -13,10 +13,11 @@ from . import translate
 from .upstream import ClaudeUpstream, CodexUpstream, UpstreamError
 
 
-# CORS 放行名单：自家网页应用（liyucheng.me 各子域）与本机页面。
+# CORS 放行名单：自家网页应用（liyucheng.me 各子域、GitHub Pages）与本机页面。
 # 不放行 * —— 反代默认无鉴权，任意来源可用会让恶意网页偷跑订阅额度。
 _CORS_ORIGIN_RE = re.compile(
     r"^https://([a-z0-9-]+\.)*liyucheng\.me$"
+    r"|^https://liyucheng1997\.github\.io$"
     r"|^https?://(localhost|127\.0\.0\.1)(:\d+)?$"
 )
 
